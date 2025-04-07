@@ -1,0 +1,6 @@
+path: "/"
+method: "POST"
+extra:
+  python:
+    source: "endpoints/new_slack_bot.py"
+    class: "NewSlackBotEndpoint"

@@ -1,0 +1,29 @@
+settings:
+  - name: bot_token
+    type: secret-input
+    required: true
+    label:
+      en_US: Bot Token
+      ja_JP: Bot Token
+    placeholder:
+      en_US: Please input your Bot Token
+      ja_JP: SlackアプリのBot User OAuth Tokenを入力してください
+  - name: allow_retry
+    type: boolean
+    required: false
+    label:
+      en_US: Allow Retry
+      ja_JP: Slackからの再試行を許可
+    default: false
+  - name: app
+    type: app-selector
+    required: true
+    scope: chat
+    label:
+      en_US: App
+      ja_JP: 連携するDifyアプリ
+    placeholder:
+      en_US: Select the Dify app to connect
+      ja_JP: 連携させたいDifyのチャットアプリを選択してください
+endpoints:
+  - endpoints/new_slack_bot.yaml
