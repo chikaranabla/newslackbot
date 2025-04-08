@@ -150,12 +150,34 @@ class NewSlackBotEndpoint(Endpoint):
 
                     try:
                         client = WebClient(token=bot_token)
+                        slack_mrkdwn_text = dify_answer
+
+                        def protect_bold(match):
+                            return f"%%BOLD_START%%{match.group(1)}%%BOLD_END%%"
+
+                        slack_mrkdwn_text = re.sub(
+                            r'^\s*#+\s+(.+)',
+                            protect_bold,
+                            slack_mrkdwn_text,
+                            flags=re.MULTILINE
+                        )
+                        slack_mrkdwn_text = re.sub(r'\*\*(.+?)\*\*', protect_bold, slack_mrkdwn_text)
+                        slack_mrkdwn_text = re.sub(r'__(.+?)__', protect_bold, slack_mrkdwn_text)
+                        slack_mrkdwn_text = re.sub(
+                            r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)',
+                            r'_\1_',
+                            slack_mrkdwn_text
+                        )
+                        slack_mrkdwn_text = re.sub(r'~~(.+?)~~', r'~\1~', slack_mrkdwn_text)
+                        slack_mrkdwn_text = slack_mrkdwn_text.replace("%%BOLD_START%%", "*").replace("%%BOLD_END%%", "*")
+                        logger.debug(f"Converted Dify answer to Slack mrkdwn (first 200 chars): {slack_mrkdwn_text[:200]}...")
                         result = client.chat_postMessage(
                             channel=channel_id,
-                            text=dify_answer,
-                            thread_ts=thread_ts if channel_type != "im" else None
+                            text=slack_mrkdwn_text,
+                            thread_ts=thread_ts if channel_type != "im" else None,
+                            mrkdwn=True
                         )
-                        logger.info(f"Posted message to Slack channel {channel_id}: {result.get('ts')}")
+                        logger.info(f"Posted message to Slack channel {channel_id} with mrkdwn: {result.get('ts')}")
                         return Response(
                             status=200,
                             response=json.dumps({"status": "success", "message_ts": result.get('ts')}, ensure_ascii=False),
