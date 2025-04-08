@@ -6,7 +6,7 @@ from dify_plugin import Endpoint
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import logging
-import re # re モジュールをインポート
+import re
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -51,7 +51,10 @@ class NewSlackBotEndpoint(Endpoint):
 
         logger.info(f"Parsed Slack event data: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
-        if data.get("type") == "url_verification":
+        request_type = data.get("type")
+
+        # --- Handle different request types ---
+        if request_type == "url_verification":
             challenge_code = data.get("challenge")
             if challenge_code:
                 logger.info(f"Handling URL verification, challenge code: {challenge_code}")
@@ -64,7 +67,7 @@ class NewSlackBotEndpoint(Endpoint):
                 logger.warning("URL verification request received without challenge code.")
                 return Response(status=400, response="Bad Request: Missing challenge code.")
 
-        if data.get("type") == "event_callback":
+        elif request_type == "event_callback":
             event = data.get("event")
             if not event or not isinstance(event, dict):
                 logger.warning("No 'event' field or invalid format in event_callback.")
@@ -75,58 +78,51 @@ class NewSlackBotEndpoint(Endpoint):
                 logger.info("Ignoring event from bot itself (bot_id present).")
                 return Response(status=200, response="ok, ignored bot message")
 
-            if event.get("subtype") is not None and event.get("subtype") not in ["thread_broadcast"]: # Allow thread broadcasts
+            if event.get("subtype") is not None and event.get("subtype") not in ["thread_broadcast"]:
                 logger.info(f"Ignoring event with subtype: {event.get('subtype')}")
                 return Response(status=200, response="ok, ignored subtype")
             # --- End Ignore ---
 
             event_type = event.get("type")
-            channel_type = event.get("channel_type") # e.g., "channel", "im", "mpim"
+            channel_type = event.get("channel_type")
             logger.info(f"Processing event_callback. Event type: {event_type}, Channel Type: {channel_type}")
 
             message_text = event.get("text", "")
             user_id = event.get("user")
             channel_id = event.get("channel")
             ts = event.get("ts")
-            thread_ts = event.get("thread_ts", ts) # Use event ts if not in a thread
-            query_text = None
+            thread_ts = event.get("thread_ts", ts)
+            query_text = None # Initialize query_text
 
             if not all([user_id, channel_id, ts, message_text is not None]):
                  logger.warning(f"Missing essential fields (user, channel, ts, text) in event: {event}")
                  return Response(status=200, response="ok, missing essential fields")
 
-            # --- Case 1: App Mention in a channel/group ---
+            # --- Extract query based on event type ---
             if event_type == "app_mention":
                 logger.info(f"Processing app_mention in channel {channel_id} from user {user_id}.")
-                # Use regex for potentially more robust mention removal
                 raw_message = message_text.strip()
-                # Pattern to match <@BOT_ID> potentially followed by spaces
                 query_text_match = re.sub(r"<@\w+>\s*", "", raw_message, count=1)
-                if query_text_match != raw_message: # Check if substitution happened
+                if query_text_match != raw_message:
                      query_text = query_text_match.strip()
                      logger.info(f"Extracted query from app_mention: '{query_text}'")
-                else:
-                     # Fallback if regex didn't work as expected or mention format is unusual
-                     if raw_message.startswith("<@"):
-                         parts = raw_message.split(">", 1)
-                         if len(parts) > 1:
-                             query_text = parts[1].strip()
-                             logger.info(f"Extracted query from app_mention (fallback): '{query_text}'")
-                         else:
-                             query_text = "" # Mention only
-                             logger.info("Extracted empty query (mention only).")
-                     else:
-                         logger.warning(f"app_mention event text doesn't start with mention. Text: {message_text}")
-                         query_text = None # Not a valid mention trigger
+                elif raw_message.startswith("<@"): # Fallback
+                     parts = raw_message.split(">", 1)
+                     if len(parts) > 1: query_text = parts[1].strip()
+                     else: query_text = ""
+                     logger.info(f"Extracted query from app_mention (fallback): '{query_text}'")
+                # If query_text is still None here, it means it wasn't a valid mention trigger
 
-            # --- Case 2: Direct Message (DM) ---
             elif event_type == "message" and channel_type == "im":
                 logger.info(f"Processing direct message (DM) in channel {channel_id} from user {user_id}.")
                 query_text = message_text.strip()
                 logger.info(f"Extracted query from DM: '{query_text}'")
 
+            # --- If event type is not mention or DM, ignore ---
+            # (No specific 'else' needed here, query_text remains None)
+
             # --- Invoke Dify if query_text was extracted ---
-            if query_text is not None: # Process even if query_text is empty ('')
+            if query_text is not None:
                 dify_app_config = settings.get("app")
                 bot_token = settings.get("bot_token")
 
@@ -149,7 +145,7 @@ class NewSlackBotEndpoint(Endpoint):
                 logger.debug(f"(User for logging: {user_id_for_dify})")
 
                 try:
-                    # Call Dify API (without conversation_id or user)
+                    # Call Dify API
                     response_from_dify = self.session.app.chat.invoke(
                         app_id=dify_app_id,
                         query=query_text,
@@ -167,7 +163,7 @@ class NewSlackBotEndpoint(Endpoint):
                         result = client.chat_postMessage(
                             channel=channel_id,
                             text=dify_answer,
-                            thread_ts=thread_ts if channel_type != "im" else None # No thread in DMs
+                            thread_ts=thread_ts if channel_type != "im" else None
                         )
                         logger.info(f"Posted message to Slack channel {channel_id}: {result.get('ts')}")
                         return Response(
@@ -195,17 +191,11 @@ class NewSlackBotEndpoint(Endpoint):
                         content_type="application/json",
                     )
             else:
-                # query_text is None (e.g., mention didn't start with <@)
-                logger.info("No valid query extracted, skipping Dify invocation.")
-                return Response(status=200, response="ok, no query extracted")
+                # query_text is None (ignored event type or invalid mention)
+                logger.info("No valid query extracted or event type ignored, skipping Dify invocation.")
+                return Response(status=200, response="ok, no action needed")
 
-        # --- Other event types (besides event_callback) ---
+        # --- Other top-level types ---
         else:
-            logger.info(f"Ignoring event type: {event_type}")
-            return Response(status=200, response="ok, ignored event type")
-
-        # --- Other top-level types (besides event_callback, url_verification) ---
-        else:
-            top_level_type = data.get('type', 'Unknown type') if data else "No data"
-            logger.info(f"Ignoring top-level event type: {top_level_type}")
+            logger.info(f"Ignoring top-level request type: {request_type}")
             return Response(status=200, response="ok, ignored top-level type")
