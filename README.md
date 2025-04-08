@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ## new_slack_bot
 
 **Author:** chikara
@@ -8,3 +9,6 @@
 
 
 
+=======
+# newslackbot
+>>>>>>> 5eaec1405c2818643bf105e28968717394ac5406
