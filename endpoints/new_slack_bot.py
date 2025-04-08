@@ -154,22 +154,21 @@ class NewSlackBotEndpoint(Endpoint):
                         logger.error(f"Could not notify user about missing app_id: {slack_e}", exc_info=True)
                      return Response(status=500, response=error_message)
 
-                logger.info(f"Invoking Dify app {dify_app_id} with query: '{query_text}'")
+                logger.info(f"Invoking Dify app {dify_app_id} with query: '{query_text}' (Memory/conversation_id disabled)")
 
-                # ★★★ Use conversation_id only ★★★
-                conversation_id = f"slack-conv-{channel_id}"
-                # Log user_id for reference, but don't pass it to invoke
+                # Log user_id for reference, but don't pass it or conversation_id
                 user_id_for_dify = f"slack-user-{user_id}"
-                logger.info(f"Using Dify conversation_id: {conversation_id} (User for logging: {user_id_for_dify})")
+                logger.debug(f"(User for logging: {user_id_for_dify})")
 
                 try:
+                    # ★★★ Call Dify API with basic arguments only ★★★
                     response_from_dify = self.session.app.chat.invoke(
                         app_id=dify_app_id,
                         query=query_text,
                         inputs={},
-                        response_mode="blocking",
-                        # user=user_id_for_dify,          # user argument removed
-                        conversation_id=conversation_id # conversation_id argument remains
+                        response_mode="blocking"
+                        # user argument removed
+                        # conversation_id argument removed
                     )
 
                     logger.debug(f"Raw response from Dify: {response_from_dify}")
