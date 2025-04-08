@@ -92,13 +92,12 @@ class NewSlackBotEndpoint(Endpoint):
             channel_id = event.get("channel")
             ts = event.get("ts")
             thread_ts = event.get("thread_ts", ts)
-            query_text = None # Initialize query_text
+            query_text = None
 
             if not all([user_id, channel_id, ts, message_text is not None]):
                  logger.warning(f"Missing essential fields (user, channel, ts, text) in event: {event}")
                  return Response(status=200, response="ok, missing essential fields")
 
-            # --- Extract query based on event type ---
             if event_type == "app_mention":
                 logger.info(f"Processing app_mention in channel {channel_id} from user {user_id}.")
                 raw_message = message_text.strip()
@@ -106,27 +105,21 @@ class NewSlackBotEndpoint(Endpoint):
                 if query_text_match != raw_message:
                      query_text = query_text_match.strip()
                      logger.info(f"Extracted query from app_mention: '{query_text}'")
-                elif raw_message.startswith("<@"): # Fallback
+                elif raw_message.startswith("<@"):
                      parts = raw_message.split(">", 1)
                      if len(parts) > 1: query_text = parts[1].strip()
                      else: query_text = ""
                      logger.info(f"Extracted query from app_mention (fallback): '{query_text}'")
-                # If query_text is still None here, it means it wasn't a valid mention trigger
 
             elif event_type == "message" and channel_type == "im":
                 logger.info(f"Processing direct message (DM) in channel {channel_id} from user {user_id}.")
                 query_text = message_text.strip()
                 logger.info(f"Extracted query from DM: '{query_text}'")
 
-            # --- If event type is not mention or DM, ignore ---
-            # (No specific 'else' needed here, query_text remains None)
-
-            # --- Invoke Dify if query_text was extracted ---
             if query_text is not None:
                 dify_app_config = settings.get("app")
                 bot_token = settings.get("bot_token")
 
-                # --- Configuration Check ---
                 if not bot_token or not dify_app_config or not isinstance(dify_app_config, dict) or not dify_app_config.get("app_id"):
                     error_message = "Bot Token or Dify App configuration is missing or invalid."
                     logger.error(error_message)
@@ -137,7 +130,6 @@ class NewSlackBotEndpoint(Endpoint):
                          except Exception as slack_e:
                              logger.error(f"Could not notify user about config error: {slack_e}", exc_info=True)
                     return Response(status=500, response=error_message)
-                # --- End Configuration Check ---
 
                 dify_app_id = dify_app_config["app_id"]
                 logger.info(f"Invoking Dify app {dify_app_id} with query: '{query_text}' (Memory disabled)")
@@ -145,7 +137,6 @@ class NewSlackBotEndpoint(Endpoint):
                 logger.debug(f"(User for logging: {user_id_for_dify})")
 
                 try:
-                    # Call Dify API
                     response_from_dify = self.session.app.chat.invoke(
                         app_id=dify_app_id,
                         query=query_text,
@@ -157,7 +148,6 @@ class NewSlackBotEndpoint(Endpoint):
                     dify_answer = response_from_dify.get("answer", "(No response received)")
                     logger.info(f"Received answer from Dify: {dify_answer[:200]}...")
 
-                    # Post response back to Slack
                     try:
                         client = WebClient(token=bot_token)
                         result = client.chat_postMessage(
@@ -191,11 +181,9 @@ class NewSlackBotEndpoint(Endpoint):
                         content_type="application/json",
                     )
             else:
-                # query_text is None (ignored event type or invalid mention)
                 logger.info("No valid query extracted or event type ignored, skipping Dify invocation.")
                 return Response(status=200, response="ok, no action needed")
 
-        # --- Other top-level types ---
         else:
             logger.info(f"Ignoring top-level request type: {request_type}")
             return Response(status=200, response="ok, ignored top-level type")
