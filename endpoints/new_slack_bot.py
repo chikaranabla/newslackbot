@@ -156,12 +156,19 @@ class NewSlackBotEndpoint(Endpoint):
 
                 logger.info(f"Invoking Dify app {dify_app_id} with query: '{query_text}'")
 
+                # ★★★ Add conversation_id and user ID ★★★
+                conversation_id = f"slack-conv-{channel_id}"
+                user_id_for_dify = f"slack-user-{user_id}"
+                logger.info(f"Using Dify user: {user_id_for_dify}, conversation_id: {conversation_id}")
+
                 try:
                     response_from_dify = self.session.app.chat.invoke(
                         app_id=dify_app_id,
                         query=query_text,
                         inputs={},
-                        response_mode="blocking"
+                        response_mode="blocking",
+                        user=user_id_for_dify,          # ★★★ user argument added ★★★
+                        conversation_id=conversation_id # ★★★ conversation_id argument added ★★★
                     )
 
                     logger.debug(f"Raw response from Dify: {response_from_dify}")
@@ -194,9 +201,18 @@ class NewSlackBotEndpoint(Endpoint):
                 except Exception as e:
                     error_trace = traceback.format_exc()
                     logger.error(f"Error invoking Dify app or processing response:\n{error_trace}")
+                    # Check if the error is the TypeError for the 'user' argument
+                    if isinstance(e, TypeError) and "unexpected keyword argument 'user'" in str(e):
+                         logger.error(">>> Detected TypeError for 'user' argument again! <<<")
+                         # You might want to automatically retry without the 'user' argument,
+                         # or just notify the user to remove it manually.
+                         # For now, just log it and notify the user.
+                         error_message_to_user = "Sorry, there was a configuration issue calling Dify (TypeError: user). Please contact the administrator."
+                    else:
+                         error_message_to_user = f"Sorry, an error occurred while processing your request with Dify. Please check the application logs."
+
                     try:
                         client = WebClient(token=bot_token)
-                        error_message_to_user = f"Sorry, an error occurred while processing your request with Dify. Please check the application logs."
                         client.chat_postMessage(channel=channel_id, text=error_message_to_user, thread_ts=thread_ts)
                     except Exception as slack_e:
                         logger.error(f"Could not notify user about Dify invocation error: {slack_e}", exc_info=True)
