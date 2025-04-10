@@ -11,6 +11,117 @@ import re
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+## CHANGED SECTION: Dify の Markdown を Slack 書式 (mrkdwn) に変換する関数
+def convert_markdown_to_slack(dify_text: str) -> str:
+    """
+    Dify Markdown → Slack mrkdwn に変換する関数。
+    
+    主なポイント:
+      - 見出し (#, ##, ###...) は一時的にプレースホルダ化してから Slack 太字 (*見出し*) にする。
+        → そうしないと後で斜体変換に巻き込まれてしまう可能性がある。
+      - 行頭の '*　' (アスタリスク+全角スペース) や '*   ' (複数半角スペース) を必ず '* ' (半角スペース1つ) に統一。
+      - '**text**' / '__text__' はプレースホルダ化 → 後で '*text*' に復元。
+      - 斜体 (*text*) は箇条書きマーカーとは区別して変換。
+      - コードブロックやインラインコードはプレースホルダ化 → 復元。
+      - リンク [title](url) → <url|title>
+      - 取り消し線 ~~text~~ → ~text~
+    """
+
+    text = dify_text
+
+    # 0. コードブロック (``` ... ```) を保護
+    codeblocks = {}
+    def protect_codeblock(m):
+        idx = len(codeblocks)
+        placeholder = f"%%CODEBLOCK_{idx}%%"
+        codeblocks[placeholder] = m.group(0)  # ```...```
+        return placeholder
+    text = re.sub(r"```([\s\S]*?)```", protect_codeblock, text)
+
+    # 1. インラインコード `code` を保護
+    inlinecodes = {}
+    def protect_inlinecode(m):
+        idx = len(inlinecodes)
+        placeholder = f"%%INLINECODE_{idx}%%"
+        inlinecodes[placeholder] = m.group(0)  # `code`
+        return placeholder
+    text = re.sub(r"`([^`]+)`", protect_inlinecode, text)
+
+    # 2. リンク [title](url) → <url|title>
+    text = re.sub(r"\[([^\]]+)\]\((http[^\)]+)\)", r"<\2|\1>", text)
+
+    # 3. 見出し (#, ##, ###...) をプレースホルダ化
+    heading_map = {}
+    def protect_heading(m):
+        idx = len(heading_map)
+        placeholder = f"%%HEADING_{idx}%%"
+        heading_text = m.group(2).strip()  # 実際の見出し内容
+        heading_map[placeholder] = heading_text
+        return placeholder
+
+    # 行頭に # が 1～6個あるものを抽出
+    text = re.sub(
+        r'^[ \t]*(#{1,6})\s+(.*)$',
+        protect_heading,
+        text,
+        flags=re.MULTILINE
+    )
+
+    # 4. 行頭に '*　' (全角スペース) → '* '（半角スペース1つ）
+    #    または複数半角スペースも '* ' に統一
+    #   例: "*    " → "* "
+    #        "*　"  → "* " (全角スペース)
+    text = re.sub(r'^[ \t]*\*[\u3000\s]+', '* ', text, flags=re.MULTILINE)
+
+    # 行頭に「・」「•」があれば '* ' に置換
+    text = re.sub(r'^[ \t]*[・•]\s+', '* ', text, flags=re.MULTILINE)
+
+    # 5. 太字 (**text** / __text__) をプレースホルダ化
+    bold_map = {}
+    def protect_bold(m):
+        idx = len(bold_map)
+        placeholder = f"%%BOLD_{idx}%%"
+        bold_map[placeholder] = m.group(1)
+        return placeholder
+
+    text = re.sub(r"\*\*(.+?)\*\*", protect_bold, text)
+    text = re.sub(r"__(.+?)__", protect_bold, text)
+
+    # 6. 取り消し線 ~~text~~ → ~text~
+    text = re.sub(r"~~(.+?)~~", r"~\1~", text)
+
+    # 7. 斜体 (*text*) → _text_ (箇条書きマーカーの * は除外)
+    lines = text.splitlines()
+    new_lines = []
+    italic_pattern = r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)'
+    for line in lines:
+        # 行頭に "* " があれば取り除いた後に斜体変換 (衝突回避)
+        m = re.match(r'^(\s*\*\s)(.*)$', line)
+        if m:
+            prefix, rest = m.groups()
+            rest_converted = re.sub(italic_pattern, r'_\1_', rest)
+            new_lines.append(prefix + rest_converted)
+        else:
+            new_lines.append(re.sub(italic_pattern, r'_\1_', line))
+
+    text = "\n".join(new_lines)
+
+    # 8. プレースホルダ: 見出し → Slack 太字 (*heading_text*)
+    for placeholder, heading_text in heading_map.items():
+        text = text.replace(placeholder, f"*{heading_text}*")
+
+    # 9. プレースホルダ: 太字 → *text*
+    for placeholder, content in bold_map.items():
+        text = text.replace(placeholder, f"*{content}*")
+
+    # 10. コードブロック / インラインコード を元に戻す
+    for placeholder, block_text in codeblocks.items():
+        text = text.replace(placeholder, block_text)
+    for placeholder, inline_text in inlinecodes.items():
+        text = text.replace(placeholder, inline_text)
+
+    return text
+
 class NewSlackBotEndpoint(Endpoint):
     def _invoke(self, r: Request, values: Mapping, settings: Mapping) -> Response:
         logger.debug(f"Received request: Method={r.method}, Path={r.path}")
@@ -150,26 +261,7 @@ class NewSlackBotEndpoint(Endpoint):
 
                     try:
                         client = WebClient(token=bot_token)
-                        slack_mrkdwn_text = dify_answer
-
-                        def protect_bold(match):
-                            return f"%%BOLD_START%%{match.group(1)}%%BOLD_END%%"
-
-                        slack_mrkdwn_text = re.sub(
-                            r'^\s*#+\s+(.+)',
-                            protect_bold,
-                            slack_mrkdwn_text,
-                            flags=re.MULTILINE
-                        )
-                        slack_mrkdwn_text = re.sub(r'\*\*(.+?)\*\*', protect_bold, slack_mrkdwn_text)
-                        slack_mrkdwn_text = re.sub(r'__(.+?)__', protect_bold, slack_mrkdwn_text)
-                        slack_mrkdwn_text = re.sub(
-                            r'(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)',
-                            r'_\1_',
-                            slack_mrkdwn_text
-                        )
-                        slack_mrkdwn_text = re.sub(r'~~(.+?)~~', r'~\1~', slack_mrkdwn_text)
-                        slack_mrkdwn_text = slack_mrkdwn_text.replace("%%BOLD_START%%", "*").replace("%%BOLD_END%%", "*")
+                        slack_mrkdwn_text = convert_markdown_to_slack(dify_answer)
                         logger.debug(f"Converted Dify answer to Slack mrkdwn (first 200 chars): {slack_mrkdwn_text[:200]}...")
                         result = client.chat_postMessage(
                             channel=channel_id,
